@@ -1,0 +1,9 @@
+A to deduct 5 HP
+D to add 3 HP
+T to start count down
+U to cancel count down
+
+You can change the count down time by looking at
+the Configuration.js in notepad/textedit
+
+-Bee Lee

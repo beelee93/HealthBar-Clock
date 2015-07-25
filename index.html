@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>CNYang Convocation 2015</title>
+
+        <style>
+            body {  
+                margin: 0;
+            }
+
+            noshow {
+                width: 0px;
+                height: 0px;
+                visibility: hidden;
+            }
+        </style>
+
+        <script src="configuration.js"></script>
+        <script src="BindingParser.js"></script>
+        <script>
+            // ====== Global variables ======
+            var canvas = null;
+            var subcanvas = null;
+
+            var context = null;
+            var subcanvascontext = null;
+
+            var requestAnimationFrame = null;
+
+            var timePrev = -1;
+
+            var hp =
+            {
+                'realAmount': 100,
+                'animationAmount': 0
+            }
+
+            var square = new Rectangle(0, 0, 10, 10);
+
+            var dimensions = {
+                'clientWidth': 100,
+                'clientHeight': 100,
+                'midX': 50,
+                'midY': 50
+            };
+
+            var BGM = null;
+
+            // definitions for various drawn objects
+            var outerRectangle = new Rectangle(0, 0, 0, 0);
+            var innerRectangle = new Rectangle(0, 0, 0, 0);
+
+            // bar highlight
+            var barHighlightOffset = {
+                'x' : -1000,
+                'width' : 1000
+            };
+
+            // bar gradients
+            var greenGrad = new BarGradient(75, 209, 151, 0, 164, 82);
+            var redGrad = new BarGradient(206, 74, 74, 163, 0, 0);
+
+            // backing gradient
+            var colorGrayGrad = null;
+
+            var hpFontSize = 60;
+
+            // rotating clock
+            var clockImg = {
+                'img': null,
+                'x': 0,
+                'y': 0,
+                'size': [0, 0, 0, 0, 0, 0],
+                'halfSize': [0, 0, 0, 0, 0, 0],
+                'alpha': [0, 0, 0, 0, 0, 0],
+                'alphaPhase': 0,
+                'tickInvokePhase': 0,  // anim phase of the 'change-to-red' animation
+                'tickInvokePhase2': 0, // anim phase of the back clocks flashes
+                'phase2data': [2, 1.0], // flashes the clock of elem[0] when tickInvokePhase2 < elem[1]
+                'fadeIn': true,
+                'angle': 0,
+                'speedFactor': 1.0,
+                'hue': "white"
+            };
+
+            // corner border
+            var cornerBorder = {
+                'img': null,
+                'size': 0,
+                'alpha': 0.4
+            };
+
+            // health change indicator
+            var hcGreenGrad = null;
+            var hcRedGrad = null;
+            var hcInjured = false;
+            var hcAlpha = 0;
+
+            // sound effect channels
+            var maxChannels = 10;
+            var audioChannels = null;
+
+            // if this is true, the entire app will stop working
+            var stopOrder = false;
+            var animStop = false;
+
+            // count down timer
+            var countDown = {
+                "timeLeft": -1,
+                "radius": 128,
+                "gradient": null,
+                "maxTime": 60,
+                "command": null,
+                "x": 0,
+                "y": 0,
+                "startCountDown": function () {
+                    if (this.timeLeft < 0)
+                        playTicking();
+                    this.timeLeft = this.maxTime;
+                },
+
+                "cancelCountDown": function () {
+                    this.timeLeft = -1;
+                    stopTicking();
+                },
+
+                "alarmCallback": null
+            };
+
+            var shockWave = {
+                "size": 0,
+                "acc": 0,
+                "alpha": 0,
+                "anim": false,
+                "img": null
+            };
+
+            // ====== Setup ======
+            // called when the document has finished loading
+            function setup() {
+                canvas = document.getElementById("mainCanvas");
+                context = canvas.getContext("2d");
+
+                subcanvas = document.getElementById("subCanvas");
+                subcanvascontext = subcanvas.getContext("2d");
+
+                window.addEventListener("keypress", onKeyDown, true);
+
+                if (!context || !subcanvascontext) {
+                    invokeStopOrder("Cannot create canvas context. Stopping...");
+                    return;
+                }
+
+                getDimensions();
+                resizeObjects();
+
+                requestAnimationFrame = window.requestAnimationFrame ||
+                                                    window.webkitRequestAnimationFrame ||
+                                                    window.mozRequestAnimationFrame ||
+                                                    window.msRequestAnimationFrame ||
+                                                    window.oRequestAnimationFrame ||
+                                                    function (callback) {
+                                                        return setTimeout(callback, 1);
+                                                    };
+
+                // create backing gradient
+                colorGrayGrad = context.createLinearGradient(0, 0, 0, 160);
+                colorGrayGrad.addColorStop(0, "#010101");
+                colorGrayGrad.addColorStop(1, "#555555");
+
+                // setup clock
+                clockImg.img = document.getElementById("clockImg");
+                shockWave.img = document.getElementById("shockImg");
+
+                // setup music
+                BGM = document.getElementById("music2");
+                if (globalSettings.playMusic)
+                    BGM.play();
+
+                // setup audio channels
+                audioChannels = [];
+                for (a = 0; a < maxChannels; a++) {
+                    audioChannels[a] = new Object();
+                    audioChannels[a].channel = new Audio();
+                    audioChannels[a].finished = -1;
+                }
+                // begin animation
+                requestAnimationFrame(onFrame);
+
+                // setup callbacks
+                window.onresize = onResize;
+
+                // setup binding parser
+                var i;
+                for (i = 0; i < globalKeyBindings.length; i++) {
+                    bindKey(globalKeyBindings[i]);
+                    console.log("Parsed: " + globalKeyBindings[i]);
+                }
+
+                bindCommandName("changeHealth", cmdChangeHealth);
+                bindCommandName("startCountDown", cmdStartCountDown);
+                bindCommandName("cancelCountDown", cmdCancelCountDown);
+
+
+                // set countdown settings
+                countDown.maxTime = globalSettings.guessTime;
+
+                // corner border
+                cornerBorder.img = document.getElementById("cornerBorderImg");
+            }
+
+            // ====== Functions ======
+            // stops the app, with the provided error message
+            function invokeStopOrder(errMsg) {
+                stopOrder = true;
+                document.getElementById("divError").innerHTML = errMsg;
+            }
+
+            // on getting a frame
+            function onFrame(timeStamp) {
+                if (!stopOrder) {
+                    if (timePrev < 0) {
+                        // allow first frame call to set up timer
+                        timePrev = timeStamp;
+                    }
+                    else {
+                        // get elapsed time in seconds
+                        var diffTime = (timeStamp - timePrev) / 1000.0;
+                        timePrev = timeStamp;
+
+                        // update and render
+                        update(diffTime);
+                        render(diffTime);
+                    }
+
+                    // request for another frame
+                    requestAnimationFrame(onFrame);
+                }
+
+            }
+
+            // command bindings
+            function cmdChangeHealth(arrArgs) {
+                var chg = parseIntArg("changeHealth", arrArgs[0]);
+                if (isNaN(chg)) return;
+
+                var ind = 0;
+                if (arrArgs[1] == "GREEN") {
+                    ind = 1;
+                } else if (arrArgs[1] == "RED") {
+                    ind = -1;
+                }
+
+                changeHealth(chg, ind);
+            }
+
+            function cmdStartCountDown(arrArgs) {
+                var i = parseIntArg("startCountDown", arrArgs[0]);
+                if (isNaN(i)) return;
+
+                if (i > 0)
+                    countDown.maxTime = i; // override max time
+                else
+                    countDown.maxTime = globalSettings.guessTime;
+
+                var argsCopy = copyArray(arrArgs);
+                argsCopy.splice(0, 1);
+                argsCopy.push(null);
+                argsCopy.push(null);
+                countDown.command = argsCopy;
+
+                countDown.startCountDown();
+                createShock();
+            }
+
+            function cmdCancelCountDown(arrArgs) {
+                countDown.cancelCountDown();
+            }
+
+            // main rendering function
+            function render(elapsedTime) {
+                var percentage = hp.animationAmount / 100.0;
+
+                // clear the screen
+                context.clearRect(0, 0, dimensions.clientWidth, dimensions.clientHeight);
+                subcanvascontext.clearRect(0, 0, subcanvas.width, subcanvas.height);
+
+                // blacken entire screen
+                context.fillStyle = "black";
+                context.fillRect(0, 0, dimensions.clientWidth, dimensions.clientHeight);
+
+                // draw the clocks
+                var iClock;
+                for (iClock = 0; iClock < 6; iClock++) {
+                    context.save();
+                    context.translate(dimensions.midX, dimensions.midY);
+                    context.rotate((iClock % 2 == 0 ? 1 : -1) * clockImg.angle / (iClock + 1));
+                    context.globalAlpha = clockImg.alpha[iClock];
+                    context.drawImage(clockImg.img, -clockImg.halfSize[iClock], -clockImg.halfSize[iClock],
+                        clockImg.size[iClock], clockImg.size[iClock]);
+                    context.restore();
+                }
+
+                // clock hue
+                context.save();
+                context.beginPath();
+                context.rect(0, 0, dimensions.clientWidth, dimensions.clientHeight);
+                context.fillStyle = clockImg.hue;
+                context.globalCompositeOperation = "multiply";
+                context.fill();
+                context.restore();
+
+                // draw the count down timer
+                if (countDown.timeLeft > 0) {
+                    context.beginPath();
+                    context.moveTo(countDown.x, countDown.y);
+                    context.arc(countDown.x, countDown.y, countDown.radius,
+                        1.5 * Math.PI, 1.5 * Math.PI + 2 * Math.PI * countDown.timeLeft / countDown.maxTime, false);
+                    context.closePath();
+                    context.globalCompositeOperation = "lighter";
+                    context.fillStyle = countDown.gradient;
+                    context.fill();
+                    context.globalCompositeOperation = "source-over";
+                }
+
+                // draw the shockwave
+                if (shockWave.anim) {
+                    context.globalCompositeOperation = "overlay";
+                    context.globalAlpha = shockWave.alpha;
+                    context.drawImage(shockWave.img, dimensions.midX - shockWave.size / 2, dimensions.midY - shockWave.size / 2,
+                      shockWave.size, shockWave.size);
+                    context.globalCompositeOperation = "source-over";
+                    context.globalAlpha = 1;
+                }
+
+                // prepare hp bar highlight gradient
+                var highlightGrad = context.createLinearGradient(barHighlightOffset.x, dimensions.midY - 40,
+                    barHighlightOffset.x + barHighlightOffset.width, dimensions.midY);
+                highlightGrad.addColorStop(0, "black");
+                highlightGrad.addColorStop(0.5, "#252525");
+                highlightGrad.addColorStop(1, "black");
+
+                // draw outer rectangle
+                context.beginPath();
+                context.rect(outerRectangle.x, outerRectangle.y, outerRectangle.w, outerRectangle.h);
+                context.strokeStyle = "white";
+                context.stroke();
+
+                // draw the backing
+                context.save();
+                context.beginPath();
+                context.globalCompositeOperation = "lighter";
+                context.translate(innerRectangle.x, innerRectangle.y);
+                context.rect(0, 0, outerRectangle.w - 6, innerRectangle.h);
+                context.fillStyle = colorGrayGrad;
+                context.fill();
+                context.globalCompositeOperation = "source-over";
+                context.restore();
+
+                // draw inner rectangle
+                // -- save transform stack
+                context.save();
+
+                // -- set the colors
+                var colorLight = lerpColor(redGrad.lightr, redGrad.lightg, redGrad.lightb,
+                                greenGrad.lightr, greenGrad.lightg, greenGrad.lightb, percentage);
+                var colorDark = lerpColor(redGrad.darkr, redGrad.darkg, redGrad.darkb,
+                                greenGrad.darkr, greenGrad.darkg, greenGrad.darkb, percentage);
+                var barColorGrad = context.createLinearGradient(0, 0, 0, 158);
+
+                barColorGrad.addColorStop(0, colorLight);
+                barColorGrad.addColorStop(1, colorDark);
+
+                // -- draw the rectangle
+                context.translate(innerRectangle.x, innerRectangle.y);
+                context.beginPath();
+                context.globalAlpha = 0.75;
+                context.rect(0, 0, innerRectangle.w, innerRectangle.h);
+                context.fillStyle = barColorGrad;
+                context.fill();
+                context.globalAlpha = 1;
+
+                // -- pop transform stack
+                context.restore();
+
+                // draw the hp bar highlight
+                // -- additive blend the highlight       
+                context.globalCompositeOperation = "lighter";
+                context.beginPath();
+                context.fillStyle = highlightGrad;
+                context.rect(innerRectangle.x, innerRectangle.y, innerRectangle.w, innerRectangle.h);
+                context.fill();
+                context.globalCompositeOperation = "source-over";
+                context.restore();
+
+                // draw hp text
+                context.font = Math.floor(hpFontSize).toString() + "px Arial";
+                context.fillStyle = "white";
+                context.textBaseline = "hanging";
+
+                var txt = Math.floor(hp.animationAmount).toString() + "%";
+                var txtMeasure = context.measureText(txt).width / 2.0;
+
+                context.fillText(txt, dimensions.midX - txtMeasure, outerRectangle.y + outerRectangle.h + 10);
+
+                // draw copyright
+                context.font = "13px Arial";
+                txt = "Copyright © 2015 CNYSP";
+                context.textBaseline = "bottom";
+                txtMeasure = context.measureText(txt);
+
+                context.fillText(txt, dimensions.clientWidth - cornerBorder.size - 10 - txtMeasure.width, dimensions.clientHeight - 3);
+
+                // draw health indicator foreground
+                if (hcAlpha > 0) {
+                    context.beginPath();
+                    context.fillStyle = (hcInjured ? hcRedGrad : hcGreenGrad);
+                    context.globalAlpha = hcAlpha;
+                    context.globalCompositeOperation = "lighter";
+                    context.rect(0, 0, dimensions.clientWidth, dimensions.clientHeight);
+                    context.fill();
+                    context.globalAlpha = 1;
+                    context.globalCompositeOperation = "source-over";
+                }
+
+                // draw corner borders
+                context.save();
+                context.globalAlpha = cornerBorder.alpha;
+                context.drawImage(cornerBorder.img, 0, 0, cornerBorder.size, cornerBorder.size); // TL
+
+                context.translate(dimensions.clientWidth, 0);
+                context.rotate(Math.PI / 2);
+                context.drawImage(cornerBorder.img, 0, 0, cornerBorder.size, cornerBorder.size); // TR
+                context.restore();
+
+                context.save();
+                context.globalAlpha = cornerBorder.alpha;
+                context.translate(dimensions.clientWidth, dimensions.clientHeight);
+                context.rotate(Math.PI);
+                context.drawImage(cornerBorder.img, 0, 0, cornerBorder.size, cornerBorder.size); // BR
+                context.restore();
+
+                context.save();
+                context.globalAlpha = cornerBorder.alpha;
+                context.translate(0, dimensions.clientHeight);
+                context.rotate(-Math.PI / 2);
+                context.drawImage(cornerBorder.img, 0, 0, cornerBorder.size, cornerBorder.size); // BL
+                context.transform(1, 0, 0, 1, 0, 0);
+                context.globalAlpha = 1.0;
+                context.restore();
+            }
+
+            // updating function
+            function update(elapsedTime) {
+                // update the hp bar dimensions
+                innerRectangle.w = hp.animationAmount * (outerRectangle.w - 6) / 100.0;
+
+                if (!animStop) {
+                    // update clock rotation and fader
+                    if (clockImg.speedFactor < 1.0) { // animation during ticking
+                        clockImg.angle -= elapsedTime * Math.PI / 50 * clockImg.speedFactor;
+
+                        // this animates starting of the countdown
+                        clockImg.alpha[0] = lerpFloat(0.7, 0.1, clockImg.tickInvokePhase);
+                        clockImg.alpha[1] = lerpFloat(0.2, 1, clockImg.tickInvokePhase);
+
+                        if (clockImg.tickInvokePhase > 0) {
+                            clockImg.tickInvokePhase -= elapsedTime;
+                            if (clockImg.tickInvokePhase < 0) clockImg.tickInvokePhase = 0;
+                        }
+                    }
+                    else { // idle animation
+                        clockImg.angle += elapsedTime * Math.PI / 50 * clockImg.speedFactor;
+
+                        clockImg.alphaPhase += Math.PI / 15 * elapsedTime;
+                        if (clockImg.alphaPhase > 2 * Math.PI) clockImg.alphaPhase -= 2 * Math.PI;
+                        clockImg.alpha[0] = 0.2 * Math.cos(clockImg.alphaPhase) + 0.4;
+                        clockImg.alpha[1] = 0.2 * Math.cos(clockImg.alphaPhase - Math.PI / 2) + 0.4;
+                    }
+
+                    // back clocks flashing animation
+                    if (clockImg.tickInvokePhase2 > 0) {
+                        clockImg.tickInvokePhase2 -= elapsedTime;
+
+                        if (clockImg.phase2data[1] > clockImg.tickInvokePhase2 && clockImg.phase2data[0] < 6) {
+                            // flash the next clock
+                            clockImg.alpha[clockImg.phase2data[0]] = 0.5;
+
+                            // advance to next clock
+                            clockImg.phase2data[0]++;
+                            clockImg.phase2data[1] -= 0.1;
+                        }
+                    }
+
+                    var iClock;
+                    for (iClock = 2; iClock < 6; iClock++) {
+                        if (clockImg.alpha[iClock] > 0) {
+                            clockImg.alpha[iClock] -= 0.5 * elapsedTime;
+                            if (clockImg.alpha[iClock] < 0) clockImg.alpha[iClock] = 0;
+                        }
+                    }
+
+                    // update countdown
+                    if (countDown.timeLeft > 0) {
+                        countDown.timeLeft -= elapsedTime;
+                        if (countDown.timeLeft <= 0) {
+
+                            stopTicking();
+
+                            countDown.timeLeft = -1;
+                            if (countDown.command[0] != null) {
+                                // parse and execute command
+                                var leftover = countDown.command.splice(0, 1);
+                                passArguments(leftover[0], countDown.command);
+
+                                if (leftover[0] != "STARTCOUNTDOWN") {
+                                    countDown.command = null; // remove command
+                                    createShock();
+                                }
+
+                            }
+                            else {
+                                changeHealth(3, -1);
+                                createShock();
+                            }
+                        }
+                    }
+                }
+
+                // update health change indicator
+                if (hcAlpha > 0) {
+                    hcAlpha -= 0.5 * elapsedTime;
+                    if (hcAlpha < 0) hcAlpha = 0;
+                }
+
+                // animate hp bar scaling by moving animAmount to realAmount
+                var diff;
+                if (hp.realAmount > hp.animationAmount) {
+                    diff = Math.max(20, hp.realAmount - hp.animationAmount)
+                    hp.animationAmount += diff * elapsedTime;
+
+                    if (hp.animationAmount > hp.realAmount) hp.animationAmount = hp.realAmount;
+                }
+                else if (hp.realAmount < hp.animationAmount) {
+                    diff = Math.max(20, hp.animationAmount - hp.realAmount);
+                    hp.animationAmount -= diff * elapsedTime;
+
+                    if (hp.animationAmount < hp.realAmount) hp.animationAmount = hp.realAmount;
+                }
+
+                // update hp bar highlight
+                barHighlightOffset.x += 1024 * elapsedTime;
+                if (barHighlightOffset.x > innerRectangle.w + barHighlightOffset.width + 100) {
+                    barHighlightOffset.x = -(barHighlightOffset.width + 100);
+                }
+
+
+                // update shockwave
+                if (shockWave.anim) {
+                    shockWave.size += shockWave.acc * elapsedTime;
+                    shockWave.acc /= Math.pow(12, elapsedTime);
+                    if (shockWave.size > clockImg.size / 2) {
+                        shockWave.alpha -= elapsedTime;
+                        if (shockWave.alpha <= 0) {
+                            shockWave.alpha = 0;
+                            shockWave.anim = false;
+                        }
+                    }
+                }
+            }
+
+            // on resize
+            function onResize() {
+                getDimensions();
+                resizeObjects();
+            }
+
+            // obtain client dimensions
+            function getDimensions() {
+                dimensions.clientWidth = window.innerWidth;
+                dimensions.clientHeight = window.innerHeight;
+                dimensions.midX = dimensions.clientWidth / 2.0;
+                dimensions.midY = dimensions.clientHeight / 2.0;
+
+                canvas.width = dimensions.clientWidth;
+                canvas.height = dimensions.clientHeight;
+            }
+
+            // resize the various drawn objects
+            function resizeObjects() {
+                outerRectangle.x = 10;
+                outerRectangle.y = dimensions.midY - 80;
+                outerRectangle.w = dimensions.clientWidth - 20;
+                outerRectangle.h = 160;
+
+                innerRectangle.x = outerRectangle.x + 3;
+                innerRectangle.y = outerRectangle.y + 3;
+                innerRectangle.w = outerRectangle.w - 6;
+                innerRectangle.h = outerRectangle.h - 6;
+
+                // resize clocks
+                var minSize = Math.min(dimensions.clientWidth, dimensions.clientHeight);
+                minSize = Math.max(256, minSize - 256);
+                var iClock;
+                clockImg.size[0] = minSize;
+                clockImg.halfSize[0] = minSize / 2;
+                for (iClock = 1; iClock < 6; iClock += 1) {
+                    clockImg.size[iClock] = 1.35 * clockImg.size[iClock - 1];
+                    clockImg.halfSize[iClock] = clockImg.size[iClock] / 2;
+                }
+
+                clockImg.x = dimensions.midX;
+                clockImg.y = dimensions.midY;
+
+                // resize indicator gradients
+                hcGreenGrad = context.createRadialGradient(dimensions.midX, dimensions.midY, 100, dimensions.midX, dimensions.midY, dimensions.midX);
+                hcRedGrad = context.createRadialGradient(dimensions.midX, dimensions.midY, 100, dimensions.midX, dimensions.midY, dimensions.midX);
+
+                hcGreenGrad.addColorStop(0, "black");
+                hcGreenGrad.addColorStop(1, "#00F000");
+
+                hcRedGrad.addColorStop(0, "black");
+                hcRedGrad.addColorStop(1, "#F00000");
+
+                // resize count down
+                countDown.radius = minSize / 2.25;
+                countDown.x = dimensions.midX;
+                countDown.y = dimensions.midY;
+                countDown.gradient = context.createRadialGradient(countDown.x, countDown.y, 0, countDown.x, countDown.y, countDown.radius);
+                countDown.gradient.addColorStop(0, "#000000");
+                countDown.gradient.addColorStop(0.85, "#FF9900");
+                countDown.gradient.addColorStop(1, "#000000");
+                countDown.maxTime = globalSettings.guessTime;
+
+                // resize corner border
+                var scaleFactor = minSize / 800;
+                cornerBorder.size = 256 * scaleFactor;
+            }
+
+            // create a new rectangle object
+            function Rectangle(px, py, sw, sh) {
+                this.x = px;
+                this.y = py;
+                this.w = sw;
+                this.h = sh;
+            }
+
+
+            // change to hex
+            function componentToHex(c) {
+                var hex = c.toString(16);
+                return (hex.length == 1 ? "0" + hex : hex);
+            }
+
+            // change rgb to hex
+            function rgbToHex(r, g, b) {
+                return "#" + componentToHex(r) + componentToHex(g) + componentToHex(b);
+            }
+
+            // interpolate between two colors and return hex code
+            function lerpColor(r0, g0, b0, r1, g1, b1, t) {
+                // clamp
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+
+                var fac = 1.0 - t;
+                var r = Math.floor(t * r1 + fac * r0);
+                var g = Math.floor(t * g1 + fac * g0);
+                var b = Math.floor(t * b1 + fac * b0);
+
+                return rgbToHex(r, g, b);
+            }
+
+            function lerpFloat(f0, f1, t) {
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+
+                var fac = 1.0 - t;
+                return t * f1 + fac * f0;
+            }
+
+            // defines the colours for the main health bar gradient
+            function BarGradient(r0, g0, b0, r1, g1, b1) {
+                this.lightr = r0;
+                this.lightg = g0;
+                this.lightb = b0;
+                this.darkr = r1;
+                this.darkg = g1;
+                this.darkb = b1;
+            }
+
+            function changeHealth(change, ind) {
+                hp.realAmount += change;
+                if (hp.realAmount < 0) {
+                    hp.realAmount = 0;
+                    animStop = true;
+                    BGM.pause();
+                }
+                else {
+                    animStop = false;
+                    if (BGM.paused) BGM.play();
+                }
+                if (hp.realAmount > 100) hp.realAmount = 100;
+
+                hcInjured = (ind < 0);
+                if (ind != 0) {
+                    hcAlpha = 0.8;
+                    playSound(hcInjured ? "sndWrong" : "sndCorrect");
+                }
+            }
+
+            // key press handler
+            function onKeyDown(evt) {
+                var c = evt.keyCode;
+                var i;
+                for (i = 0; i < parsedKeyBinding.length; i++) {
+                    if (parsedKeyBinding[i].keyCode == c || parsedKeyBinding[i].keyCode + 32 == c) {
+                        console.log("Key : " +
+                            String.fromCharCode(parsedKeyBinding[i].keyCode) +
+                            "; Command: " + parsedKeyBinding[i].command);
+
+                        passArguments(parsedKeyBinding[i].command, parsedKeyBinding[i].arguments);
+                        return;
+                    }
+                }
+            }
+
+            // play sound effect on multi channel
+            function playSound(sound) {
+                if (globalSettings.playSFX) {
+                    var thistime;
+                    var a;
+                    for (a = 0; a < maxChannels; a++) {
+                        thistime = new Date();
+                        if (audioChannels[a].finished < thistime.getTime()) {
+                            // this one is available
+                            audioChannels[a].finished = thistime.getTime() +
+                                            document.getElementById(sound).duration * 1000;
+                            audioChannels[a].channel.src = document.getElementById(sound).src;
+                            audioChannels[a].channel.load();
+                            audioChannels[a].channel.play();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // create the shockwave
+            function createShock() {
+                shockWave.size = 0;
+                shockWave.alpha = 1;
+                shockWave.anim = true;
+                shockWave.acc = clockImg.size[2] * 4;
+            }
+
+            // creates a new copy of array
+            function copyArray(arrOrig) {
+                var arr2 = [];
+                var i;
+                for (i = 0; i < arrOrig.length; i++) {
+                    arr2[i] = arrOrig[i];
+                }
+                return arr2;
+            }
+
+            function playTicking() {
+                var snd = document.getElementById("sndTickingStart");
+                snd.play();
+
+                clockImg.speedFactor = 0.25;
+                clockImg.hue = "red";
+                clockImg.tickInvokePhase = 1.0;
+                clockImg.tickInvokePhase2 = 1.0;
+                clockImg.phase2data = [2, 1.0];
+                BGM.volume = 0.2;
+            }
+
+            function stopTicking() {
+                var snd = document.getElementById("sndTickingStart");
+                snd.pause();
+                snd.load();
+
+                clockImg.speedFactor = 1.0;
+                clockImg.hue = "white";
+                BGM.volume = 1.0;
+            }
+        </script>
+    </head>
+    <body onload="setup()" style="overflow:hidden">
+        <div id="divError" style="color: red"></div>
+        <div id="container">
+            <canvas id="mainCanvas" width="500" height="500">
+                Canvas not supported. Oh dear...
+            </canvas>
+        </div>
+
+        <img id="clockImg" src="clock.png" class="noshow" alt="clock"/>
+        <img id="shockImg" src="shockwave.png" class="noshow" alt="shockwave"/>
+        <img id="cornerBorderImg" src="border_corner.png" class="noshow" alt="border"/>
+        
+        <!-- Audio sources -->
+        <audio id="music2" preload="auto" class="noshow" loop="loop">
+            <source src="Sounds/music2.mp3" type="audio/mpeg" />
+        </audio>
+
+        <audio src="Sounds/correct.ogg" id="sndCorrect" preload="auto" class="noshow">
+        </audio>
+
+        <audio src="Sounds/wrong.ogg" id="sndWrong" preload="auto" class="noshow">
+        </audio>
+        <audio src="Sounds/tickingstart.ogg" id="sndTickingStart" preload="auto" class="noshow">
+        </audio>
+        <!-- Sub canvas for extra drawing -->
+        <canvas id="subCanvas" style="visibility:hidden" width="500" height="500"></canvas>
+    </body>
+</html>
+
+<!-- Created by Ong Bee Lee-->
